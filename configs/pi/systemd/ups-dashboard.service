@@ -1,0 +1,21 @@
+[Unit]
+Description=UPS monitoring dashboard
+After=network.target nut-server.service
+Requires=nut-server.service
+
+[Service]
+Type=simple
+User=upsdash
+Group=upsdash
+EnvironmentFile=-/etc/nut-safe-monitoring/site.env
+ExecStart=/usr/bin/python3 /opt/ups-dashboard/dashboard.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ups-dashboard
+
+[Install]
+WantedBy=multi-user.target

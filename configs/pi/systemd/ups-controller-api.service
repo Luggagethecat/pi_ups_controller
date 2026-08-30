@@ -1,0 +1,22 @@
+[Unit]
+Description=UPS Controller Reporting API
+After=network.target ups-dashboard.service
+Wants=ups-dashboard.service
+
+[Service]
+Type=simple
+User=upsdash
+Group=upsdash
+EnvironmentFile=-/etc/nut-safe-monitoring/site.env
+ExecStart=/usr/bin/python3 /opt/ups-controller/controller-api.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/ups-controller
+ReadWritePaths=/var/lib/ups-dashboard
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Safe NUT quick internal battery self-test
+After=network-online.target nut-server.service postfix.service
+Requires=nut-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=upstester
+Group=upstester
+SupplementaryGroups=postdrop
+EnvironmentFile=-/etc/nut-safe-monitoring/site.env
+ExecStart=/usr/local/sbin/nut-quick-selftest
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/nut/upstester.secret
+ReadWritePaths=/var/spool/postfix/maildrop

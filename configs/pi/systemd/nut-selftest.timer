@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly NUT quick internal battery self-test
+
+[Timer]
+OnCalendar=Sun 10:00
+Persistent=false
+Unit=nut-selftest.service
+
+[Install]
+WantedBy=timers.target
