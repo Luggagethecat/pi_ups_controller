@@ -36,10 +36,13 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
               └───────┬───────┬─────┘
                       │3493   │3493
                ┌──────▼───┐ ┌─▼──────────┐
-               │ compute  │ │ storage    │
-               │ NUT      │ │ NUT        │
-               │ 3m VMs   │ │ 5m host    │
-               │ 4m host  │ │ shutdown   │
+               │ VM Server│ │ NAS Server │
+               │ NUT      | | NUT        |
+               | Shutdown │ │ Shutdown   │
+               │ At 3m VM | | 5m Host    |
+               | Shutdown | │            │
+               │ At 4m    | |            | 
+               | VM Host  │ │            │
                └──────────┘ └────────────┘
 ```
 
