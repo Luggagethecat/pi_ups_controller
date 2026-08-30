@@ -27,7 +27,7 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
                     |   USB    |
                     └────┬─────┘
               ┌──────────▼──────────┐
-              │ Linux controller    │
+              │ Raspberry Pi        │
               │ NUT driver + upsd   │
               │ dashboard           │
               │ email queue         │
