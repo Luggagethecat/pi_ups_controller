@@ -60,7 +60,7 @@ The design evolved through real testing on:
 
 - Red Hat Enterprise Linux **9** family client(s);
 - Red Hat Enterprise Linux **10** client(s);
-- Raspberry Pi / Debian-family Linux used as the central USB NUT controller;
+- Raspberry Pi / Debian-family Linux used as the central NUT controller, Connected to the UPS via USB;
 - Dynamix **UPSD1200 Defender** 1200 VA / 720 W UPS;
 - USB device observed as `0665:5161` with NUT `nutdrv_qx` / Voltronic-QS-compatible behaviour;
 - libvirt / QEMU / KVM Linux and Windows guests;
