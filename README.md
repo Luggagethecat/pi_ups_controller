@@ -1,4 +1,4 @@
-# SBC NUT Monitoring & Staged Shutdown Reference Guide
+# SBC NUT UPS Monitoring & Staged Shutdown of Servers Reference Guide
 
 A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, with a lightweight dashboard for ease of monitoring.
 
