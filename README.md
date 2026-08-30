@@ -1,8 +1,8 @@
 # SBC NUT UPS Monitoring & Staged Shutdown of Servers Reference Guide
 
-A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, with a lightweight dashboard for ease of monitoring using consumer grade UPS appliances.
+A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux clients, optional libvirt/KVM virtual machines(Windows and Linux), email alerts, with a lightweight dashboard for ease of monitoring using consumer grade UPS appliances.
 
-The project (Single Board Computer Nut or SBC Nut for short) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux or Windows host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
+The project (Single Board Computer Nut or SBC Nut for short) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
 
 > **Vibe-coded, then tested on real hardware:** this project was developed iteratively with an AI coding assistant. Generated code was not treated as correct merely because it looked plausible: the design was exercised on real hardware, failures were investigated, and the architecture was changed when testing exposed unsafe or unreliable assumptions. This is still a community reference project, not a formally audited safety product.
 
@@ -42,7 +42,7 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
                │ At 3m VM | | At         |
                | Shutdown | │ 5m Host    │
                │ At 4m    | |            | 
-               | VM Host  │ │            │
+               | Host     │ │            │
                └──────────┘ └────────────┘
 ```
 
