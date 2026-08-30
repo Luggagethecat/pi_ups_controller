@@ -19,11 +19,13 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
 ## What this design does
 
 ```text
-                         USB
+                         
                     ┌──────────┐
                     │   UPS    │
                     └────┬─────┘
-                         │
+                    ┌──────────┐
+                    |   USB    |
+                    └────┬─────┘
               ┌──────────▼──────────┐
               │ Linux controller    │
               │ NUT driver + upsd   │
