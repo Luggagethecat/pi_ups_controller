@@ -1,6 +1,6 @@
 # Pi NUT Monitoring & Staged Shutdown Reference Guide
 
-A security-conscious reference design for using **Network UPS Tools (NUT)** with a small Linux controller, multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, a lightweight dashboard, and staged graceful shutdown.
+A security-conscious reference design for using **Network UPS Tools (NUT)** with a small Linux controller such as a Raspberry Pi, multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, a lightweight dashboard, and staged graceful shutdown.
 
 The project (Pi Nut) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux or Windows host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
 
