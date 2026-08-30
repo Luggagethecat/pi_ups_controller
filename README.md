@@ -2,7 +2,7 @@
 
 A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, with a lightweight dashboard for ease of monitoring.
 
-The project (Single Board Computer Nut) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux or Windows host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
+The project (Single Board Computer Nut or SBC Nut for short) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux or Windows host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
 
 > **Vibe-coded, then tested on real hardware:** this project was developed iteratively with an AI coding assistant. Generated code was not treated as correct merely because it looked plausible: the design was exercised on real hardware, failures were investigated, and the architecture was changed when testing exposed unsafe or unreliable assumptions. This is still a community reference project, not a formally audited safety product.
 
