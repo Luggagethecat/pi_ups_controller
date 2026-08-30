@@ -50,7 +50,9 @@ Reference outage sequence:
 - **4:00** — compute host requests its own local graceful poweroff.
 - **5:00** — storage host requests its own local graceful poweroff.
 - **6:30** — if the UPS is still `OB`, the controller sends one consolidated shutdown report.
-- **mains return** — controller sends a restoration report. This reference design does not automatically wake hosts back up.
+- **mains return** — controller sends a restoration report. 
+
+**This reference design does not automatically wake hosts back up.**
 
 The 6:30 report is deliberately conservative. A physical host is reported as **shutdown observed** only when two controller-side signals agree: its SSH/TCP stack is no longer reachable and its persistent NUT client connection is gone. VM shutdown can be reported as **confirmed** from an authenticated libvirt result produced by the compute host.
 
