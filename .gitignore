@@ -1,0 +1,38 @@
+# Secrets and local configuration
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
+*.password
+*.credentials
+site.env
+mail.env
+sasl_passwd
+upsd.users
+upsmon.conf
+
+# Runtime / reports / databases
+*.db
+*.db-*
+*.sqlite*
+*.json.tmp
+vm-shutdown-report.json
+vm-shutdown-result.json
+power-watch-state.json
+
+# Backups / archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor/OS
+.DS_Store
+*.swp
+*~
