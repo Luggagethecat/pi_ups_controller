@@ -1,0 +1,15 @@
+# PUBLIC EXAMPLE ONLY. Generate strong independent passwords locally.
+# Do not commit your real /etc/nut/upsd.users.
+
+[compute-node]
+    password = REPLACE_WITH_STRONG_RANDOM_PASSWORD
+    upsmon secondary
+
+[storage-node]
+    password = REPLACE_WITH_DIFFERENT_STRONG_RANDOM_PASSWORD
+    upsmon secondary
+
+# Narrow instant-command identity: only quick internal battery self-test.
+[upstester]
+    password = REPLACE_WITH_STRONG_RANDOM_SELFTEST_PASSWORD
+    instcmds = test.battery.start.quick

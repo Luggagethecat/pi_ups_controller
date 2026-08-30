@@ -1,0 +1,103 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Safe warm test: briefly removes only this client's NUT monitoring session.
+set -uo pipefail
+
+UPSC="/usr/bin/upsc"
+SYSTEMCTL="/usr/bin/systemctl"
+SLEEP="/usr/bin/sleep"
+SITE_ENV="${SITE_ENV:-/etc/nut-safe-monitoring/site.env}"
+HOLD_SECONDS=20
+SS="$(command -v ss 2>/dev/null || true)"
+
+fail() { echo; echo "FAILED: $*"; echo; exit 1; }
+[[ -r "$SITE_ENV" ]] || fail "Missing $SITE_ENV"
+# shellcheck disable=SC1090
+source "$SITE_ENV"
+UPS_SERVER_IP="${UPS_SERVER_IP:?UPS_SERVER_IP missing}"
+UPS="${UPS_NAME:-ups}@${UPS_SERVER_IP}"
+
+ups_is_safely_online() {
+    local status
+    status="$($UPSC "$UPS" ups.status 2>/dev/null)" || return 1
+    case " $status " in *" OB "*|*" LB "*|*" FSD "*) return 1 ;; esac
+    case " $status " in *" OL "*) return 0 ;; *) return 1 ;; esac
+}
+
+nut_connection_present() {
+    [[ -n "$SS" ]] || return 1
+    "$SS" -Htn state established 2>/dev/null | grep -Fq "${UPS_SERVER_IP}:3493"
+}
+
+show_preflight() {
+    echo "\n=============================================="
+    echo " UPS SAFE WARM CLIENT TEST"
+    echo "==============================================\n"
+    [[ -n "$SS" ]] || fail "ss command could not be located"
+    echo "ss command: $SS"
+    status="$($UPSC "$UPS" ups.status 2>/dev/null)" || fail "Cannot communicate with controller"
+    echo "UPS status: $status"
+    ups_is_safely_online || fail "UPS is not safely OL; warm test refused"
+    "$SYSTEMCTL" is-active --quiet nut.target || fail "nut.target is not active"
+    "$SYSTEMCTL" is-enabled --quiet nut.target || fail "nut.target is not enabled"
+    "$SYSTEMCTL" is-active --quiet nut-monitor || fail "nut-monitor is not active"
+    for request in /run/nut/local-poweroff-request /run/nut/vm-shutdown-request /run/nut/vm-shutdown-request.processing; do
+        [[ ! -e "$request" ]] || fail "Pending shutdown request exists: $request"
+    done
+    nut_connection_present || fail "No persistent NUT connection to controller"
+    echo "PRE-FLIGHT PASSED"
+}
+
+restore_monitor() {
+    echo "\nRestoring nut-monitor..."
+    "$SYSTEMCTL" start nut-monitor >/dev/null 2>&1 || true
+    for ((wait=1; wait<=10; wait++)); do
+        "$SYSTEMCTL" is-active --quiet nut-monitor && break
+        "$SLEEP" 1
+    done
+    "$SYSTEMCTL" is-active --quiet nut-monitor && echo "nut-monitor: ACTIVE" || echo "WARNING: nut-monitor did not become active!"
+}
+
+run_test() {
+    show_preflight
+    echo "\nStarting ${HOLD_SECONDS}-second warm test. NO shutdown or UPS command will be issued."
+    trap restore_monitor EXIT INT TERM HUP
+    "$SYSTEMCTL" stop nut-monitor || fail "Could not stop nut-monitor"
+    "$SLEEP" 1
+    "$SYSTEMCTL" is-active --quiet nut-monitor && fail "nut-monitor unexpectedly remained active"
+    echo "nut-monitor: temporarily STOPPED"
+
+    for ((second=1; second<=HOLD_SECONDS; second++)); do
+        if ! ups_is_safely_online; then
+            echo "UPS is no longer safely OL; restoring nut-monitor immediately"
+            restore_monitor
+            trap - EXIT INT TERM HUP
+            exit 2
+        fi
+        remaining=$((HOLD_SECONDS - second))
+        if (( second == 1 || remaining % 5 == 0 )); then
+            echo "Warm-test window: ${remaining}s remaining"
+        fi
+        "$SLEEP" 1
+    done
+
+    restore_monitor
+    trap - EXIT INT TERM HUP
+    "$SYSTEMCTL" is-active --quiet nut-monitor || fail "nut-monitor failed to recover"
+    ups_is_safely_online || fail "UPS is not safely OL after test"
+
+    connected=0
+    for ((wait=1; wait<=10; wait++)); do
+        if nut_connection_present; then connected=1; break; fi
+        "$SLEEP" 1
+    done
+    [[ "$connected" -eq 1 ]] || fail "Persistent NUT connection did not return"
+    echo "Persistent NUT connection: RESTORED"
+    echo "\n==============================================\n WARM CLIENT TEST PASSED\n=============================================="
+}
+
+case "${1:-}" in
+    --check) show_preflight ;;
+    --run) run_test ;;
+    *) echo "Usage: $0 --check | --run"; exit 2 ;;
+esac

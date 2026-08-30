@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+HOST_REQUEST="/run/nut/local-poweroff-request"
+VM_REQUEST="/run/nut/vm-shutdown-request"
+LOGGER="/usr/bin/logger"
+CHMOD="/usr/bin/chmod"
+MV="/usr/bin/mv"
+RM="/usr/bin/rm"
+
+write_request() {
+    DEST="$1"
+    REASON="$2"
+    TMP="/run/nut/.ups-request.$$"
+    umask 077
+    trap '"$RM" -f "$TMP"' EXIT HUP INT TERM
+    printf '%s\n' "$REASON" > "$TMP"
+    "$CHMOD" 600 "$TMP"
+    "$MV" -f "$TMP" "$DEST"
+    trap - EXIT HUP INT TERM
+}
+
+case "${1:-}" in
+    onbatt) "$LOGGER" -t nut-power "UPS on battery - VM and host timers armed" ;;
+    online) "$LOGGER" -t nut-power "Utility power restored - VM and host timers cancelled" ;;
+    vm-shutdown)
+        write_request "$VM_REQUEST" "vm-shutdown"
+        "$LOGGER" -t nut-power "VM graceful shutdown request created"
+        ;;
+    shutdown-timer)
+        write_request "$HOST_REQUEST" "shutdown-timer"
+        "$LOGGER" -t nut-power "Compute-host graceful shutdown request created"
+        ;;
+    lowbatt)
+        write_request "$VM_REQUEST" "vm-shutdown"
+        write_request "$HOST_REQUEST" "lowbatt"
+        "$LOGGER" -t nut-power "Low battery - requested immediate VM and host shutdown"
+        ;;
+    *) "$LOGGER" -t nut-power "Unknown UPS event: ${1:-NONE}" ;;
+esac

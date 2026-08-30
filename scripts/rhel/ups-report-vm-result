@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Sign and submit a local VM shutdown result to the controller report-only API."""
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+RESULT_FILE = Path("/run/nut/vm-shutdown-result.json")
+SECRET_FILE = Path("/etc/nut/ups-report-secret")
+CONTROLLER_IP = os.environ.get("UPS_SERVER_IP", "192.0.2.10")
+CONTROLLER_PORT = int(os.environ.get("CONTROLLER_PORT", "8081"))
+SOURCE = os.environ.get("COMPUTE_NAME", "compute-node")
+URL = f"http://{CONTROLLER_IP}:{CONTROLLER_PORT}/api/v1/report/vm-shutdown"
+
+
+def main():
+    payload = json.loads(RESULT_FILE.read_text())
+    if not isinstance(payload, dict):
+        raise SystemExit("result must be a JSON object")
+    for key in ("targets", "confirmed", "remaining"):
+        if not isinstance(payload.get(key), list) or not all(isinstance(x, str) for x in payload[key]):
+            raise SystemExit(f"invalid {key}")
+    payload["event"] = "vm_shutdown"
+    payload["source"] = SOURCE
+
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    secret = SECRET_FILE.read_text().strip().encode("utf-8")
+    if len(secret) < 32:
+        raise SystemExit("report secret too short")
+
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_hex(16)
+    signed = timestamp.encode() + b"\n" + nonce.encode() + b"\n" + body
+    signature = hmac.new(secret, signed, hashlib.sha256).hexdigest()
+
+    request = urllib.request.Request(
+        URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-UPS-Timestamp": timestamp,
+            "X-UPS-Nonce": nonce,
+            "X-UPS-Signature": signature,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.status != 200:
+                raise SystemExit(f"controller returned HTTP {response.status}")
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"controller report failed: {exc}")
+
+
+if __name__ == "__main__":
+    main()

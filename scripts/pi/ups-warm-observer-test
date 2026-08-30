@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Controller-side warm/virtual test observer.
+
+No shutdown or UPS-output command is issued by this script. The companion RHEL
+warm test briefly stops only nut-monitor on one client and restores it.
+"""
+
+import errno
+import os
+import socket
+import subprocess
+import sys
+import time
+
+
+def load_site_env(path="/etc/nut-safe-monitoring/site.env"):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+    except OSError:
+        pass
+
+
+load_site_env()
+
+UPSC = "/usr/bin/upsc"
+SS = "/usr/bin/ss"
+SUDO = "/usr/bin/sudo"
+PYTHON = "/usr/bin/python3"
+WATCHER = "/usr/local/sbin/ups-power-watch"
+UPS = f"{os.environ.get('UPS_NAME', 'ups')}@localhost"
+WAIT_TIMEOUT = 90
+
+HOSTS = {
+    "compute": {
+        "name": os.environ.get("COMPUTE_NAME", "compute-node"),
+        "ip": os.environ.get("COMPUTE_IP", "192.0.2.20"),
+    },
+    "storage": {
+        "name": os.environ.get("STORAGE_NAME", "storage-node"),
+        "ip": os.environ.get("STORAGE_IP", "192.0.2.30"),
+    },
+}
+
+
+def ups_status():
+    try:
+        result = subprocess.run([UPSC, UPS, "ups.status"], capture_output=True, text=True, timeout=5)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def ups_is_safe():
+    status = ups_status()
+    if status is None:
+        return False
+    tokens = status.split()
+    return "OL" in tokens and not any(token in tokens for token in ("OB", "LB", "FSD"))
+
+
+def host_reachable(address):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1.5)
+    try:
+        result = sock.connect_ex((address, 22))
+        return result in (0, errno.ECONNREFUSED)
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def nut_connected(address):
+    try:
+        result = subprocess.run(
+            [SUDO, "-u", "upsdash", SS, "-Htn", "state", "established"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) >= 4 and fields[-2].endswith(":3493") and fields[-1].startswith(address + ":"):
+                return True
+        return False
+    except Exception:
+        return None
+
+
+def nut_text(value):
+    return "CONNECTED" if value is True else "DISCONNECTED" if value is False else "UNKNOWN"
+
+
+def print_host_state(role):
+    info = HOSTS[role]
+    ssh = host_reachable(info["ip"])
+    nut = nut_connected(info["ip"])
+    print(f"{info['name']:20} SSH={'REACHABLE' if ssh else 'UNREACHABLE':11} NUT={nut_text(nut)}")
+    return ssh, nut
+
+
+def baseline():
+    print("\n==============================================\n UPS WARM TEST BASELINE\n==============================================\n")
+    print(f"UPS: {ups_status() or 'UNKNOWN'}\n")
+    if not ups_is_safe():
+        print("BASELINE FAILED: UPS is not safely OL")
+        return 1
+    passed = True
+    for role in ("compute", "storage"):
+        ssh, nut = print_host_state(role)
+        passed = passed and ssh and nut is True
+    print("\nBASELINE PASSED" if passed else "\nBASELINE FAILED")
+    return 0 if passed else 1
+
+
+def send_test_email():
+    result = subprocess.run([SUDO, "-u", "upsdash", WATCHER, "--test-shutdown-report"])
+    return result.returncode == 0
+
+
+def observe(role):
+    if role not in HOSTS:
+        print("Role must be compute or storage", file=sys.stderr)
+        return 2
+    info = HOSTS[role]
+    print(f"\n==============================================\n OBSERVING {info['name']}\n==============================================\n")
+    if not ups_is_safe():
+        print("FAILED: UPS is not safely OL")
+        return 1
+    ssh, nut = print_host_state(role)
+    if not ssh or nut is not True:
+        print("FAILED: host must start REACHABLE + CONNECTED")
+        return 1
+
+    print(f"\nObserver ready. Now run on {info['name']}:\n\n  /usr/local/sbin/ups-warm-client-test --run\n\nWaiting for NUT disconnect...")
+    deadline = time.time() + WAIT_TIMEOUT
+    while time.time() < deadline:
+        if not ups_is_safe():
+            print("ABORT: UPS is no longer safely OL")
+            return 1
+        if not host_reachable(info["ip"]):
+            print("FAILED: host itself became unreachable")
+            return 1
+        if nut_connected(info["ip"]) is False:
+            break
+        time.sleep(1)
+    else:
+        print("FAILED: NUT session did not disappear")
+        return 1
+
+    print("\nNUT DISCONNECT OBSERVED\nSSH remains REACHABLE\n")
+    email_ok = send_test_email()
+    print("TEST EMAIL SENT" if email_ok else "TEST EMAIL FAILED")
+    print("\nWaiting for NUT session to return...")
+
+    deadline = time.time() + WAIT_TIMEOUT
+    while time.time() < deadline:
+        if not ups_is_safe():
+            print("ABORT: UPS is no longer safely OL")
+            return 1
+        if not host_reachable(info["ip"]):
+            print("FAILED: host became unreachable during recovery")
+            return 1
+        if nut_connected(info["ip"]) is True:
+            break
+        time.sleep(1)
+    else:
+        print("FAILED: NUT session did not return")
+        return 1
+
+    print("\nNUT RECONNECTION OBSERVED\n")
+    print_host_state(role)
+    if not email_ok:
+        return 1
+    print(f"\n==============================================\n {info['name']} WARM TEST PASSED\n==============================================")
+    return 0
+
+
+def simulate_full():
+    print("\n==============================================\n SIMULATED FULL SHUTDOWN REPORT\n==============================================\n")
+    print("No server, VM, NUT service, UPS output or firewall setting will be changed.\n")
+    if not ups_is_safe():
+        print("FAILED: UPS is not safely OL")
+        return 1
+
+    simulation = r'''
+import importlib.machinery
+import importlib.util
+import time
+
+path = "/usr/local/sbin/ups-power-watch"
+loader = importlib.machinery.SourceFileLoader("ups_power_watch_simulation", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+watch = importlib.util.module_from_spec(spec)
+loader.exec_module(watch)
+
+# In-memory overrides only; disappear with this process.
+watch.host_reachable = lambda address, port=22, attempts=3, timeout=1.5: False
+watch.nut_client_connected = lambda address: False
+
+data = watch.read_ups()
+report = watch.load_vm_report(outage_start=None)
+body = watch.build_shutdown_report(data, time.time() - 390, report, test_mode=True)
+print(body)
+ok = watch.send_alert("UPS - TEST Simulated Full Shutdown", body)
+raise SystemExit(0 if ok else 1)
+'''
+    result = subprocess.run([SUDO, "-u", "upsdash", PYTHON, "-"], input=simulation, text=True)
+    if result.returncode != 0:
+        print("SIMULATION FAILED")
+        return 1
+    print("SIMULATED FULL-SHUTDOWN EMAIL SENT")
+    return 0
+
+
+def email_online():
+    if baseline() != 0:
+        return 1
+    ok = send_test_email()
+    print("TEST EMAIL SENT" if ok else "TEST EMAIL FAILED")
+    return 0 if ok else 1
+
+
+def main():
+    if len(sys.argv) == 2:
+        if sys.argv[1] == "baseline":
+            return baseline()
+        if sys.argv[1] == "simulate-full":
+            return simulate_full()
+        if sys.argv[1] == "email-online":
+            return email_online()
+    if len(sys.argv) == 3 and sys.argv[1] == "observe":
+        return observe(sys.argv[2])
+    print(
+        "Usage:\n"
+        "  ups-warm-observer-test baseline\n"
+        "  ups-warm-observer-test observe compute\n"
+        "  ups-warm-observer-test observe storage\n"
+        "  ups-warm-observer-test simulate-full\n"
+        "  ups-warm-observer-test email-online"
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,32 @@
+# Merge carefully into your own nftables ruleset; do not blindly replace a remote firewall.
+# Documentation addresses only.
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state established,related accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # SSH management from a trusted admin network: narrow this for your site.
+        ip saddr 192.0.2.0/24 tcp dport 22 accept
+
+        # NUT clients only.
+        ip saddr { 192.0.2.20, 192.0.2.30 } tcp dport 3493 accept
+
+        # Dashboard from trusted management network only.
+        ip saddr 192.0.2.0/24 tcp dport 8080 accept
+
+        # Report-only controller API from compute node only.
+        ip saddr 192.0.2.20 tcp dport 8081 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

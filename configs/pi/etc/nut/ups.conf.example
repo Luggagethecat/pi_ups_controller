@@ -1,0 +1,11 @@
+# Tested-family example for Dynamix UPSD1200 / Voltronic-QS-compatible USB behaviour.
+# Verify your own USB IDs with lsusb and NUT driver output before copying.
+maxretry = 3
+
+[ups]
+    driver = nutdrv_qx
+    port = auto
+    vendorid = 0665
+    productid = 5161
+    sdorder = -1
+    desc = "UPS"

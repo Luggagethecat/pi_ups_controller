@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+REQUEST="/run/nut/local-poweroff-request"
+LOGGER="/usr/bin/logger"
+CHMOD="/usr/bin/chmod"
+MV="/usr/bin/mv"
+RM="/usr/bin/rm"
+
+request_poweroff() {
+    REASON="$1"
+    TMP="/run/nut/.local-poweroff-request.$$"
+    umask 077
+    trap '"$RM" -f "$TMP"' EXIT HUP INT TERM
+    printf '%s\n' "$REASON" > "$TMP"
+    "$CHMOD" 600 "$TMP"
+    "$MV" -f "$TMP" "$REQUEST"
+    trap - EXIT HUP INT TERM
+    "$LOGGER" -t nut-power "Local graceful shutdown request created: $REASON"
+}
+
+case "${1:-}" in
+    onbatt) "$LOGGER" -t nut-power "UPS on battery - storage shutdown timer armed" ;;
+    online) "$LOGGER" -t nut-power "Utility power restored - storage shutdown timer cancelled" ;;
+    shutdown-timer) request_poweroff "shutdown-timer" ;;
+    lowbatt) request_poweroff "lowbatt" ;;
+    *) "$LOGGER" -t nut-power "Unknown UPS event: ${1:-NONE}" ;;
+esac

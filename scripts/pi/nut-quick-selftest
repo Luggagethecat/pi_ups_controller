@@ -1,0 +1,91 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Safe quick internal battery self-test. Review the preconditions for your UPS.
+set -uo pipefail
+
+UPSC="/usr/bin/upsc"
+UPSCMD="/usr/bin/upscmd"
+SYSTEMCTL="/usr/bin/systemctl"
+SS="/usr/bin/ss"
+SLEEP="/usr/bin/sleep"
+MAILER="/usr/local/sbin/ups-send-alert"
+SITE_ENV="${SITE_ENV:-/etc/nut-safe-monitoring/site.env}"
+SECRET="/etc/nut/upstester.secret"
+
+[[ -r "$SITE_ENV" ]] || { echo "Missing $SITE_ENV" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$SITE_ENV"
+
+UPS="${UPS_NAME:-ups}@localhost"
+COMPUTE_IP="${COMPUTE_IP:?COMPUTE_IP missing}"
+STORAGE_IP="${STORAGE_IP:?STORAGE_IP missing}"
+TEST_STARTED=0
+BEFORE_CHARGE=""
+BEFORE_VOLTAGE=""
+BEFORE_LOAD=""
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+send_alert() { local s="$1" b="$2"; printf '%s\n' "$b" | "$MAILER" "$s" || log "WARNING: email submission failed"; }
+
+abort() {
+    local reason="$*"
+    log "ABORTED: $reason"
+    if [[ "$TEST_STARTED" -eq 0 ]]; then
+        send_alert "UPS Self-Test SKIPPED" "UPS quick battery self-test was not performed.\n\nReason: $reason\n\nNo corrective UPS command was sent."
+    else
+        send_alert "UPS Self-Test FAILED" "UPS quick battery self-test did not complete successfully.\n\nReason: $reason\n\nNo corrective UPS command was sent."
+    fi
+    exit 1
+}
+
+log "===== UPS QUICK BATTERY TEST ====="
+STATUS="$($UPSC "$UPS" ups.status 2>/dev/null)" || abort "Cannot communicate with UPS"
+log "Initial UPS status: $STATUS"
+[[ "$STATUS" == "OL" ]] || abort "UPS is not exactly OL: $STATUS"
+
+if "$SYSTEMCTL" is-active --quiet nut-monitor.service; then
+    abort "nut-monitor is unexpectedly active on the central controller"
+fi
+
+"$SS" -Htn state established | grep -F ':3493' | grep -Fq "${COMPUTE_IP}:" || abort "Compute NUT client is not connected"
+"$SS" -Htn state established | grep -F ':3493' | grep -Fq "${STORAGE_IP}:" || abort "Storage NUT client is not connected"
+
+BEFORE_CHARGE="$($UPSC "$UPS" battery.charge 2>/dev/null)" || abort "Cannot read battery charge"
+BEFORE_VOLTAGE="$($UPSC "$UPS" battery.voltage 2>/dev/null || true)"
+BEFORE_LOAD="$($UPSC "$UPS" ups.load 2>/dev/null || true)"
+[[ "$BEFORE_CHARGE" =~ ^[0-9]+$ ]] || abort "Invalid battery charge value"
+(( BEFORE_CHARGE >= 90 )) || abort "Battery charge is below 90%"
+[[ -r "$SECRET" ]] || abort "Cannot read dedicated self-test credential"
+PASSWORD="$(<"$SECRET")"
+
+log "Requesting quick internal battery test"
+TEST_STARTED=1
+CMD_OUTPUT="$($UPSCMD -u upstester -p "$PASSWORD" "$UPS" test.battery.start.quick 2>&1)"
+CMD_RC=$?
+unset PASSWORD
+log "upscmd return code: $CMD_RC"
+[[ -n "$CMD_OUTPUT" ]] && log "upscmd response: $CMD_OUTPUT"
+
+TEST_SEEN=0
+LAST_STATUS=""
+for ((n=1; n<=120; n++)); do
+    "$SLEEP" 1
+    STATUS="$($UPSC "$UPS" ups.status 2>/dev/null)" || abort "Lost UPS communication during test"
+    if [[ "$STATUS" != "$LAST_STATUS" ]]; then
+        log "UPS status: $STATUS"
+        LAST_STATUS="$STATUS"
+    fi
+    case " $STATUS " in *" CAL "*|*" BYPASS "*) TEST_SEEN=1 ;; esac
+    case " $STATUS " in *" FSD "*|*" LB "*|*" OB "*) abort "Unexpected critical/on-battery state during self-test: $STATUS" ;; esac
+    if [[ "$TEST_SEEN" -eq 1 && "$STATUS" == "OL" ]]; then
+        AFTER_CHARGE="$($UPSC "$UPS" battery.charge 2>/dev/null || true)"
+        AFTER_VOLTAGE="$($UPSC "$UPS" battery.voltage 2>/dev/null || true)"
+        AFTER_LOAD="$($UPSC "$UPS" ups.load 2>/dev/null || true)"
+        log "RESULT: PASS - self-test observed and UPS returned to OL"
+        send_alert "UPS Self-Test PASSED" "UPS quick battery self-test completed successfully.\n\nBefore: ${BEFORE_CHARGE}% / ${BEFORE_VOLTAGE:-unknown} V / ${BEFORE_LOAD:-unknown}% load\nAfter: ${AFTER_CHARGE:-unknown}% / ${AFTER_VOLTAGE:-unknown} V / ${AFTER_LOAD:-unknown}% load\n\nFinal status: OL"
+        exit 0
+    fi
+done
+
+[[ "$TEST_SEEN" -eq 1 ]] || abort "No CAL/BYPASS state observed; unable to prove self-test occurred"
+abort "Self-test occurred but UPS did not return to plain OL within 120 seconds"

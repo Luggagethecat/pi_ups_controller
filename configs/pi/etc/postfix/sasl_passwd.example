@@ -1,0 +1,3 @@
+# PUBLIC EXAMPLE ONLY. Do not commit the real sasl_passwd file.
+# Replace relay host, username and password locally.
+[smtp.example.invalid]:587 REPLACE_WITH_SMTP_USERNAME:REPLACE_WITH_APP_OR_SMTP_PASSWORD

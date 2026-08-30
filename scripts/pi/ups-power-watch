@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Read-only UPS outage watcher with conservative shutdown reporting.
+
+This script NEVER sends UPS shutdown/output commands.  It reads NUT state with
+upsc, observes protected-host state from the controller, consumes an optional
+authenticated VM shutdown report, and sends notifications through a local mailer.
+"""
+
+import errno
+import json
+import os
+import socket
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+
+UPS_NAME = os.environ.get("UPS_NAME", "ups")
+UPS = f"{UPS_NAME}@localhost"
+UPSC = "/usr/bin/upsc"
+SS = "/usr/bin/ss"
+MAILER = "/usr/local/sbin/ups-send-alert"
+
+COMPUTE_IP = os.environ.get("COMPUTE_IP", "192.0.2.20")
+STORAGE_IP = os.environ.get("STORAGE_IP", "192.0.2.30")
+COMPUTE_NAME = os.environ.get("COMPUTE_NAME", "compute-node")
+STORAGE_NAME = os.environ.get("STORAGE_NAME", "storage-node")
+
+POLL_SECONDS = 10
+COMPUTE_SHUTDOWN = int(os.environ.get("COMPUTE_SHUTDOWN_SECONDS", "240"))
+STORAGE_SHUTDOWN = int(os.environ.get("STORAGE_SHUTDOWN_SECONDS", "300"))
+REPORT_SECONDS = int(os.environ.get("REPORT_SECONDS", "390"))
+COMM_LOST_DELAY = int(os.environ.get("COMM_LOST_SECONDS", "30"))
+
+STATE_FILE = Path("/var/lib/ups-dashboard/power-watch-state.json")
+VM_REPORT_FILE = Path("/var/lib/ups-dashboard/vm-shutdown-report.json")
+
+
+def now_text():
+    return datetime.now().astimezone().strftime("%A %d %B %Y %H:%M:%S %Z")
+
+
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
+    if minutes:
+        parts.append(f"{minutes} minute" + ("s" if minutes != 1 else ""))
+    if seconds or not parts:
+        parts.append(f"{seconds} second" + ("s" if seconds != 1 else ""))
+    return " ".join(parts)
+
+
+def read_ups():
+    result = subprocess.run([UPSC, UPS], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "upsc failed")
+    data = {}
+    for line in result.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip()
+    return data
+
+
+def metric(data, name, suffix=""):
+    value = data.get(name)
+    return "unknown" if value is None else f"{value}{suffix}"
+
+
+def send_alert(subject, body):
+    try:
+        result = subprocess.run([MAILER, subject], input=body, text=True, timeout=20)
+        ok = result.returncode == 0
+        print(
+            f"{now_text()} - EMAIL {'SENT' if ok else 'FAILED'}: {subject}",
+            flush=True,
+        )
+        return ok
+    except Exception as exc:
+        print(f"{now_text()} - EMAIL ERROR: {exc}", flush=True)
+        return False
+
+
+def load_state():
+    default = {
+        "outage_start": None,
+        "report_sent": False,
+        "comm_failure_start": None,
+        "comm_alerted": False,
+    }
+    try:
+        default.update(json.loads(STATE_FILE.read_text()))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return default
+
+
+def save_state(state):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STATE_FILE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(state))
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, STATE_FILE)
+
+
+def clear_outage(state):
+    state["outage_start"] = None
+    state["report_sent"] = False
+    save_state(state)
+
+
+def host_reachable(address, port=22, attempts=3, timeout=1.5):
+    """Return True when the remote TCP/IP stack answers.
+
+    ECONNREFUSED counts as reachable: the host answered even if SSH is not
+    accepting connections.  Timeouts/unreachable errors count as not observed.
+    """
+    for _ in range(attempts):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            rc = sock.connect_ex((address, port))
+            if rc in (0, errno.ECONNREFUSED):
+                return True
+        except OSError:
+            pass
+        finally:
+            sock.close()
+        time.sleep(0.25)
+    return False
+
+
+def nut_client_connected(address):
+    """Return True/False, or None if the observation itself fails."""
+    try:
+        result = subprocess.run(
+            [SS, "-Htn", "state", "established"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            local_endpoint = fields[-2]
+            remote_endpoint = fields[-1]
+            if local_endpoint.endswith(":3493") and remote_endpoint.startswith(address + ":"):
+                return True
+        return False
+    except Exception:
+        return None
+
+
+def host_assessment(address, test_mode=False):
+    ssh = host_reachable(address)
+    nut = nut_client_connected(address)
+
+    if not ssh and nut is False:
+        label = "CURRENTLY OFFLINE BY BOTH SIGNALS" if test_mode else "SHUTDOWN OBSERVED"
+    elif ssh and nut is True:
+        label = "CURRENTLY ONLINE (expected during this test)" if test_mode else "WARNING - STILL ONLINE"
+    elif nut is None:
+        label = "WARNING - CHECK INCOMPLETE"
+    else:
+        label = "WARNING - CONFLICTING OBSERVATION"
+
+    return {
+        "assessment": label,
+        "ssh": "REACHABLE" if ssh else "UNREACHABLE",
+        "nut": "CONNECTED" if nut is True else "DISCONNECTED" if nut is False else "UNKNOWN",
+    }
+
+
+def load_vm_report(outage_start=None):
+    try:
+        report = json.loads(VM_REPORT_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+    if not isinstance(report, dict) or report.get("event") != "vm_shutdown":
+        return None
+
+    received_at = report.get("received_at")
+    if outage_start is not None:
+        if not isinstance(received_at, (int, float)) or received_at < outage_start:
+            return None
+
+    for key in ("targets", "confirmed", "remaining"):
+        if not isinstance(report.get(key), list) or not all(isinstance(x, str) for x in report[key]):
+            return None
+    return report
+
+
+def vm_section(report):
+    lines = ["VIRTUAL MACHINES", "----------------"]
+    if not report:
+        lines.extend([
+            "No authenticated VM shutdown report is available for this outage.",
+            "VM shutdown state: UNKNOWN",
+        ])
+        return "\n".join(lines)
+
+    targets = report["targets"]
+    confirmed = set(report["confirmed"])
+    remaining = set(report["remaining"])
+    lines.append(f"{len(confirmed)} of {len(targets)} shutdown confirmed.")
+    lines.append("")
+    for vm in targets:
+        if vm in confirmed:
+            state = "SHUTDOWN CONFIRMED"
+        elif vm in remaining:
+            state = "WARNING - STILL RUNNING"
+        else:
+            state = "UNKNOWN"
+        lines.append(f"{vm}: {state}")
+    return "\n".join(lines)
+
+
+def build_shutdown_report(data, outage_start, vm_report, test_mode=False):
+    compute = host_assessment(COMPUTE_IP, test_mode=test_mode)
+    storage = host_assessment(STORAGE_IP, test_mode=test_mode)
+
+    header = (
+        "THIS IS A TEST REPORT.\nNo shutdown command was issued by this test.\n"
+        if test_mode
+        else "MAINS POWER REMAINS OFF.\n"
+    )
+    duration = "TEST MODE" if test_mode else format_duration(time.time() - outage_start)
+
+    return f"""{header}
+Outage duration:
+{duration}
+
+COMPUTE SERVER
+--------------
+{COMPUTE_NAME}
+
+Assessment:
+{compute['assessment']}
+
+Network/SSH:
+{compute['ssh']}
+
+NUT monitoring session:
+{compute['nut']}
+
+
+{vm_section(vm_report)}
+
+
+STORAGE SERVER
+--------------
+{STORAGE_NAME}
+
+Assessment:
+{storage['assessment']}
+
+Network/SSH:
+{storage['ssh']}
+
+NUT monitoring session:
+{storage['nut']}
+
+
+UPS
+---
+Status:
+{data.get('ups.status', 'UNKNOWN')}
+
+Battery:
+{metric(data, 'battery.charge', '%')}
+
+Battery voltage:
+{metric(data, 'battery.voltage', ' V')}
+
+UPS load:
+{metric(data, 'ups.load', '%')}
+
+Input voltage:
+{metric(data, 'input.voltage', ' V')}
+
+
+Report generated:
+{now_text()}
+"""
+
+
+def test_shutdown_report():
+    data = read_ups()
+    report = load_vm_report(outage_start=None)
+    body = build_shutdown_report(data, time.time(), report, test_mode=True)
+    return 0 if send_alert("UPS - TEST Shutdown Report", body) else 1
+
+
+def main():
+    import sys
+
+    if len(sys.argv) == 2 and sys.argv[1] == "--test-shutdown-report":
+        raise SystemExit(test_shutdown_report())
+
+    state = load_state()
+    print(f"{now_text()} - UPS power event watcher started", flush=True)
+    last_status = None
+
+    while True:
+        try:
+            data = read_ups()
+            status = data.get("ups.status", "UNKNOWN")
+            tokens = status.split()
+
+            if state["comm_failure_start"] is not None:
+                duration = time.time() - state["comm_failure_start"]
+                if state["comm_alerted"]:
+                    send_alert(
+                        "UPS COMMUNICATION RESTORED",
+                        f"Communication with the UPS has been restored.\n\n"
+                        f"Communication outage: {format_duration(duration)}\n"
+                        f"Current status: {status}\nTime: {now_text()}\n",
+                    )
+                state["comm_failure_start"] = None
+                state["comm_alerted"] = False
+                save_state(state)
+
+            if status != last_status:
+                print(f"{now_text()} - UPS status: {status}", flush=True)
+                last_status = status
+
+            if "OB" in tokens:
+                if state["outage_start"] is None:
+                    state["outage_start"] = time.time()
+                    state["report_sent"] = False
+                    save_state(state)
+                    try:
+                        VM_REPORT_FILE.unlink()
+                    except FileNotFoundError:
+                        pass
+                    send_alert(
+                        "UPS POWER FAILURE",
+                        f"""MAINS POWER HAS FAILED.
+
+The UPS has switched to battery operation.
+
+UPS status: {status}
+Battery: {metric(data, 'battery.charge', '%')}
+Battery voltage: {metric(data, 'battery.voltage', ' V')}
+UPS load: {metric(data, 'ups.load', '%')}
+Input voltage: {metric(data, 'input.voltage', ' V')}
+
+Reference shutdown sequence:
+VMs: {int(os.environ.get('VM_SHUTDOWN_SECONDS', '180'))} seconds
+Compute host: {COMPUTE_SHUTDOWN} seconds
+Storage host: {STORAGE_SHUTDOWN} seconds
+Consolidated report: {REPORT_SECONDS} seconds
+
+Detected: {now_text()}
+""",
+                    )
+
+                duration = time.time() - state["outage_start"]
+                if duration >= REPORT_SECONDS and not state["report_sent"]:
+                    # Re-read immediately before the report so a just-restored UPS
+                    # cannot receive an "outage still active" report by stale state.
+                    fresh = read_ups()
+                    if "OB" in fresh.get("ups.status", "").split():
+                        report = load_vm_report(outage_start=state["outage_start"])
+                        body = build_shutdown_report(
+                            fresh, state["outage_start"], report, test_mode=False
+                        )
+                        if send_alert("UPS - Shutdown Report", body):
+                            state["report_sent"] = True
+                            save_state(state)
+
+            elif "OL" in tokens and state["outage_start"] is not None:
+                duration = time.time() - state["outage_start"]
+                if duration >= STORAGE_SHUTDOWN:
+                    outcome = (
+                        "The outage exceeded both host shutdown thresholds. "
+                        "Manual startup may be required."
+                    )
+                elif duration >= COMPUTE_SHUTDOWN:
+                    outcome = (
+                        "The compute-host shutdown threshold was crossed before mains returned. "
+                        "Manual startup may be required."
+                    )
+                else:
+                    outcome = "Power returned before the configured host shutdown thresholds."
+
+                send_alert(
+                    "UPS POWER RESTORED",
+                    f"""MAINS POWER HAS BEEN RESTORED.
+
+Outage duration: {format_duration(duration)}
+
+{outcome}
+
+Current UPS status: {status}
+Battery: {metric(data, 'battery.charge', '%')}
+Battery voltage: {metric(data, 'battery.voltage', ' V')}
+UPS load: {metric(data, 'ups.load', '%')}
+
+Power restored: {now_text()}
+""",
+                )
+                clear_outage(state)
+
+        except Exception as exc:
+            if state["comm_failure_start"] is None:
+                state["comm_failure_start"] = time.time()
+                save_state(state)
+                print(f"{now_text()} - UPS communication problem: {exc}", flush=True)
+
+            duration = time.time() - state["comm_failure_start"]
+            if duration >= COMM_LOST_DELAY and not state["comm_alerted"]:
+                if send_alert(
+                    "UPS COMMUNICATION LOST",
+                    f"""Communication with the UPS has been unavailable for at least {COMM_LOST_DELAY} seconds.
+
+The UPS state cannot currently be determined.
+This concerns monitoring communication; it does NOT mean an UPS command was issued.
+
+Time: {now_text()}
+""",
+                ):
+                    state["comm_alerted"] = True
+                    save_state(state)
+
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

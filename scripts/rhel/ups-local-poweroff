@@ -1,0 +1,58 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+REQUEST="/run/nut/local-poweroff-request"
+PROCESSING="/run/nut/local-poweroff-request.processing"
+ID="/usr/bin/id"
+STAT="/usr/bin/stat"
+CAT="/usr/bin/cat"
+MV="/usr/bin/mv"
+RM="/usr/bin/rm"
+SYSTEMCTL="/usr/bin/systemctl"
+LOGGER="/usr/bin/logger"
+
+log_error() {
+    "$LOGGER" -p authpriv.err -t nut-local-poweroff "$*"
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+validate_file() {
+    FILE="$1"
+    [ -e "$FILE" ] || log_error "Shutdown request missing"
+    [ ! -L "$FILE" ] || log_error "Rejected shutdown request: symlink"
+    [ -f "$FILE" ] || log_error "Rejected shutdown request: not regular file"
+
+    NUT_UID="$($ID -u nut)"
+    NUT_GID="$($ID -g nut)"
+    OWNER="$($STAT -Lc '%u:%g' "$FILE")"
+    [ "$OWNER" = "${NUT_UID}:${NUT_GID}" ] || log_error "Rejected shutdown request: wrong owner $OWNER"
+    MODE="$($STAT -Lc '%a' "$FILE")"
+    [ "$MODE" = "600" ] || log_error "Rejected shutdown request: wrong mode $MODE"
+    REASON="$($CAT "$FILE")"
+    case "$REASON" in shutdown-timer|lowbatt) ;; *) log_error "Rejected shutdown request: invalid reason" ;; esac
+}
+
+[ -e "$REQUEST" ] || exit 0
+
+if [ "${1:-}" = "--validate-only" ]; then
+    validate_file "$REQUEST"
+    printf 'VALID UPS shutdown request\nReason: %s\nOwner: %s\nMode: %s\n' "$REASON" "$OWNER" "$MODE"
+    exit 0
+fi
+
+# Claim the exact filesystem object first, then validate the claimed object.
+# This reduces the validate-then-replace race window in a group-writable runtime directory.
+"$MV" -f "$REQUEST" "$PROCESSING" || log_error "Could not claim shutdown request"
+trap '"$RM" -f "$PROCESSING"' EXIT HUP INT TERM
+validate_file "$PROCESSING"
+
+"$LOGGER" -t nut-local-poweroff "Accepted validated UPS shutdown request: $REASON"
+if "$SYSTEMCTL" --no-block poweroff; then
+    "$RM" -f "$PROCESSING"
+    trap - EXIT HUP INT TERM
+    exit 0
+fi
+
+log_error "systemctl failed to accept local poweroff request"

@@ -1,0 +1,132 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -uo pipefail
+
+REQUEST="/run/nut/vm-shutdown-request"
+PROCESSING="/run/nut/vm-shutdown-request.processing"
+RESULT="/run/nut/vm-shutdown-result.json"
+REPORTER="/usr/local/sbin/ups-report-vm-result"
+VIRSH="/usr/bin/virsh"
+PYTHON="/usr/bin/python3"
+ID="/usr/bin/id"
+STAT="/usr/bin/stat"
+CAT="/usr/bin/cat"
+MV="/usr/bin/mv"
+RM="/usr/bin/rm"
+CHMOD="/usr/bin/chmod"
+LOGGER="/usr/bin/logger"
+SLEEP="/usr/bin/sleep"
+WC="/usr/bin/wc"
+TR="/usr/bin/tr"
+HEAD="/usr/bin/head"
+SED="/usr/bin/sed"
+URI="qemu:///system"
+WAIT_SECONDS=45
+
+fail() {
+    "$LOGGER" -p authpriv.err -t ups-vm-shutdown "$*"
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+validate_file() {
+    local file="$1" nut_uid nut_gid owner mode reason
+    [[ -e "$file" ]] || fail "VM shutdown request is missing"
+    [[ ! -L "$file" ]] || fail "Rejected VM request: symlink"
+    [[ -f "$file" ]] || fail "Rejected VM request: not regular file"
+    nut_uid="$($ID -u nut)" || fail "Cannot resolve nut UID"
+    nut_gid="$($ID -g nut)" || fail "Cannot resolve nut GID"
+    owner="$($STAT -Lc '%u:%g' "$file")" || fail "Cannot stat request owner"
+    [[ "$owner" == "${nut_uid}:${nut_gid}" ]] || fail "Rejected VM request: wrong owner $owner"
+    mode="$($STAT -Lc '%a' "$file")" || fail "Cannot stat request mode"
+    [[ "$mode" == "600" ]] || fail "Rejected VM request: wrong mode $mode"
+    reason="$($CAT "$file")" || fail "Cannot read request"
+    [[ "$reason" == "vm-shutdown" ]] || fail "Rejected VM request: invalid reason"
+}
+
+[[ -e "$REQUEST" ]] || exit 0
+if [[ "${1:-}" == "--validate-only" ]]; then
+    validate_file "$REQUEST"
+    echo "VALID VM shutdown request"
+    exit 0
+fi
+
+# Atomically claim the filesystem object, then validate the claimed object.
+"$MV" -f "$REQUEST" "$PROCESSING" || fail "Cannot claim VM request"
+TARGETS="/run/nut/.ups-vm-targets.$$"
+CONFIRMED="/run/nut/.ups-vm-confirmed.$$"
+REMAINING="/run/nut/.ups-vm-remaining.$$"
+cleanup() { "$RM" -f "$PROCESSING" "$TARGETS" "$CONFIRMED" "$REMAINING"; }
+trap cleanup EXIT HUP INT TERM
+validate_file "$PROCESSING"
+
+: > "$TARGETS"; : > "$CONFIRMED"; : > "$REMAINING"
+"$CHMOD" 600 "$TARGETS" "$CONFIRMED" "$REMAINING"
+
+"$VIRSH" -c "$URI" list --name --state-running | "$SED" '/^[[:space:]]*$/d' > "$TARGETS" || fail "Unable to list running libvirt domains"
+TARGET_COUNT="$($WC -l < "$TARGETS" | "$TR" -d '[:space:]')"
+"$LOGGER" -t ups-vm-shutdown "Validated UPS VM request; ${TARGET_COUNT} running VM(s) targeted"
+
+while IFS= read -r vm; do
+    [[ -n "$vm" ]] || continue
+    if "$VIRSH" -c "$URI" shutdown "$vm" --mode agent >/dev/null 2>&1; then
+        "$LOGGER" -t ups-vm-shutdown "Guest-agent shutdown requested: $vm"
+    elif "$VIRSH" -c "$URI" shutdown "$vm" --mode acpi >/dev/null 2>&1; then
+        "$LOGGER" -t ups-vm-shutdown "ACPI shutdown requested after agent failure: $vm"
+    else
+        "$LOGGER" -p daemon.warning -t ups-vm-shutdown "Both agent and ACPI shutdown request failed: $vm"
+    fi
+done < "$TARGETS"
+
+for ((elapsed=0; elapsed<WAIT_SECONDS; elapsed+=2)); do
+    all_off=1
+    while IFS= read -r vm; do
+        [[ -n "$vm" ]] || continue
+        state="$($VIRSH -c "$URI" domstate "$vm" 2>/dev/null | "$HEAD" -n1 | "$TR" -d '\r')"
+        if [[ "$state" != "shut off" ]]; then all_off=0; break; fi
+    done < "$TARGETS"
+    (( all_off == 1 )) && break
+    "$SLEEP" 2
+done
+
+while IFS= read -r vm; do
+    [[ -n "$vm" ]] || continue
+    state="$($VIRSH -c "$URI" domstate "$vm" 2>/dev/null | "$HEAD" -n1 | "$TR" -d '\r')"
+    if [[ "$state" == "shut off" ]]; then
+        printf '%s\n' "$vm" >> "$CONFIRMED"
+        "$LOGGER" -t ups-vm-shutdown "VM shutdown confirmed: $vm"
+    else
+        printf '%s\n' "$vm" >> "$REMAINING"
+        "$LOGGER" -p daemon.warning -t ups-vm-shutdown "VM still not shut off: $vm (state=${state:-unknown})"
+    fi
+done < "$TARGETS"
+
+"$PYTHON" - "$TARGETS" "$CONFIRMED" "$REMAINING" "$RESULT" <<'PY'
+import json, os, sys
+
+def lines(path):
+    with open(path, encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f if line.rstrip("\n")]
+
+payload = {"targets": lines(sys.argv[1]), "confirmed": lines(sys.argv[2]), "remaining": lines(sys.argv[3])}
+tmp = sys.argv[4] + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2, sort_keys=True)
+    f.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, sys.argv[4])
+PY
+
+REPORT_OK=0
+if "$REPORTER"; then
+    REPORT_OK=1
+    "$LOGGER" -t ups-vm-shutdown "VM shutdown result reported to controller"
+else
+    "$LOGGER" -p daemon.warning -t ups-vm-shutdown "VM shutdown result could not be reported"
+fi
+
+REMAINING_COUNT="$($WC -l < "$REMAINING" | "$TR" -d '[:space:]')"
+[[ "$REMAINING_COUNT" == "0" ]] || fail "$REMAINING_COUNT VM(s) failed to reach shut off state"
+[[ "$REPORT_OK" == "1" ]] || fail "VMs shut down but controller reporting failed"
+"$LOGGER" -t ups-vm-shutdown "All targeted VMs confirmed shut off"
+exit 0

@@ -1,0 +1,9 @@
+[Unit]
+Description=Gracefully shut down running libvirt VMs after UPS timeout
+Wants=virtqemud.service
+After=virtqemud.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/nut-safe-monitoring/site.env
+ExecStart=/usr/local/sbin/ups-vm-shutdown

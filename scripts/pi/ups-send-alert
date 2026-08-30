@@ -1,0 +1,28 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+MAIL_ENV="${MAIL_ENV:-/etc/nut-safe-monitoring/mail.env}"
+SENDMAIL="/usr/sbin/sendmail"
+
+if [[ ! -r "$MAIL_ENV" ]]; then
+    echo "Missing mail configuration: $MAIL_ENV" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$MAIL_ENV"
+
+: "${ALERT_FROM:?ALERT_FROM must be set}"
+: "${ALERT_TO:?ALERT_TO must be set}"
+
+SUBJECT="${1:-UPS notification}"
+BODY="$(cat)"
+
+{
+    printf 'From: %s\n' "$ALERT_FROM"
+    printf 'To: %s\n' "$ALERT_TO"
+    printf 'Subject: %s\n' "$SUBJECT"
+    printf 'Content-Type: text/plain; charset=UTF-8\n'
+    printf '\n%s\n' "$BODY"
+} | "$SENDMAIL" -t

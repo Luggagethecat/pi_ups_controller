@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for validated local UPS poweroff request
+After=nut-monitor.service
+
+[Path]
+PathExists=/run/nut/local-poweroff-request
+Unit=ups-local-poweroff.service
+
+[Install]
+WantedBy=multi-user.target

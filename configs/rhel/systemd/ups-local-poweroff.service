@@ -1,0 +1,6 @@
+[Unit]
+Description=Validated local UPS-triggered poweroff
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ups-local-poweroff

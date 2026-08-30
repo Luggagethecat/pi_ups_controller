@@ -1,0 +1,13 @@
+CMDSCRIPT /usr/local/sbin/upssched-cmd-compute
+PIPEFN /run/nut/upssched.pipe
+LOCKFN /run/nut/upssched.lock
+
+AT ONBATT * EXECUTE onbatt
+AT ONBATT * START-TIMER vm-shutdown 180
+AT ONBATT * START-TIMER shutdown-timer 240
+
+AT ONLINE * EXECUTE online
+AT ONLINE * CANCEL-TIMER vm-shutdown
+AT ONLINE * CANCEL-TIMER shutdown-timer
+
+AT LOWBATT * EXECUTE lowbatt
