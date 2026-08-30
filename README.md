@@ -6,6 +6,8 @@ The project deliberately separates **UPS observation** from **host shutdown**. T
 
 > **Vibe-coded, then tested on real hardware:** this project was developed iteratively with an AI coding assistant. Generated code was not treated as correct merely because it looked plausible: the design was exercised on real hardware, failures were investigated, and the architecture was changed when testing exposed unsafe or unreliable assumptions. This is still a community reference project, not a formally audited safety product.
 
+<img width="1440" height="1256" alt="image" src="https://github.com/user-attachments/assets/00278495-98ea-4bc7-a9c2-15cac382bcba" />
+
 ## Read this first
 
 This software can participate in shutting down computers. **There is no warranty. You must test it in your own environment before relying on it.** Hardware, firmware, NUT drivers, SELinux policy, systemd packaging, networking and UPS behaviour differ between installations.
