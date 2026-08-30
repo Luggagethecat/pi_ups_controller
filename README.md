@@ -43,7 +43,7 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
                └──────────┘ └────────────┘
 ```
 
-Reference outage sequence:
+Reference outage sequence(In Minutes) :
 
 - **0:00** — controller observes `On Battery event, abbreviated as OB` and sends one immediate power-failure alert.
 - **3:00** — compute host snapshots all currently-running libvirt VMs and requests graceful VM shutdown (guest-agent first, ACPI fallback).
