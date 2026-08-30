@@ -57,7 +57,7 @@ Reference outage sequence (In Minutes) :
 
 **This reference design does not automatically wake hosts back up.**
 
-The 6:30 report is deliberately conservative. A physical host is reported as **shutdown observed** only when two controller-side signals agree: its SSH/TCP stack is no longer reachable and its persistent NUT client connection is gone. VM shutdown can be reported as **confirmed** from an authenticated libvirt result produced by the compute host.
+The 6:30 report is deliberately conservative. A physical host is reported as **shutdown observed** only when two controller-side signals agree: its SSH/TCP stack is no longer reachable and its persistent NUT client connection is gone. VM shutdown can be reported as **confirmed** from an authenticated libvirt result produced by the VM Server.
 
 ## Tested development profile
 
