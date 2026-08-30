@@ -39,8 +39,8 @@ For an AI assistant or a new maintainer, start with **[AI_CONTEXT.md](AI_CONTEXT
                │ VM Server│ │ NAS Server │
                │ NUT      | | NUT        |
                | Shutdown │ │ Shutdown   │
-               │ At 3m VM | | 5m Host    |
-               | Shutdown | │            │
+               │ At 3m VM | | At         |
+               | Shutdown | │ 5m Host    │
                │ At 4m    | |            | 
                | VM Host  │ │            │
                └──────────┘ └────────────┘
