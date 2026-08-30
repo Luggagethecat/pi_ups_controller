@@ -1,6 +1,6 @@
 # SBC NUT UPS Monitoring & Staged Shutdown of Servers Reference Guide
 
-A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, with a lightweight dashboard for ease of monitoring.
+A security-conscious reference design for using **Network UPS Tools (NUT)** with a Single Board Linux controller such as a Raspberry Pi, assisting to gracefully shutdown multiple Linux Windows clients, optional libvirt/KVM virtual machines, email alerts, with a lightweight dashboard for ease of monitoring using consumer grade UPS appliances.
 
 The project (Single Board Computer Nut or SBC Nut for short) deliberately separates **UPS observation** from **host shutdown**. The central controller reads UPS state and coordinates reporting; each protected Linux or Windows host shuts **itself** down through a tightly constrained local systemd path. The controller does not use UPS output-off commands as part of automated outage handling.
 
