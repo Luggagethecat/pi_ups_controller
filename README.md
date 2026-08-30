@@ -1,4 +1,4 @@
-# NUT Safe Monitoring & Staged Shutdown Reference
+# Pi NUT Monitoring & Staged Shutdown Reference
 
 A security-conscious reference design for using **Network UPS Tools (NUT)** with a small Linux controller, multiple Linux clients, optional libvirt/KVM virtual machines, email alerts, a lightweight dashboard, and staged graceful shutdown.
 
